@@ -9,7 +9,7 @@
 
 #elif defined(_USE_MATH_DEFINES) || defined(M_PI)
     #define _USE_MATH_DEFINES
-    #define PI M_PI 
+    #define PI M_PI  
 
 #else
     #define PI 3.141592653589793
