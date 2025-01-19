@@ -1,0 +1,149 @@
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <eigen3/Eigen/Dense> // For matrix operations (requires Eigen library)
+
+using namespace std;
+using namespace Eigen;
+
+const double PI = 3.141592653589793;
+
+// DH Parameter structure
+struct DHParameter {
+    double a;     // Link length
+    double alpha; // Link twist
+    double d;     // Link offset
+    double theta; // Joint angle
+};
+
+// Function to compute rotation matrix from Euler angles
+Matrix3d eulerToRotationMatrix(double roll, double pitch, double yaw) {
+    Matrix3d R;
+    R = AngleAxisd(yaw, Vector3d::UnitZ()) *
+        AngleAxisd(pitch, Vector3d::UnitY()) *
+        AngleAxisd(roll, Vector3d::UnitX());
+    return R;
+}
+
+// Forward Kinematics using DH Parameters
+Matrix4d forwardKinematics(const vector<DHParameter>& dhParameters) {
+    Matrix4d T = Matrix4d::Identity(); // Identity matrix for base frame
+
+    for (const auto& param : dhParameters) {
+        Matrix4d A;
+        double c_theta = cos(param.theta), s_theta = sin(param.theta);
+        double c_alpha = cos(param.alpha), s_alpha = sin(param.alpha);
+
+        // Transformation matrix for each joint
+        A << c_theta, -s_theta * c_alpha, s_theta * s_alpha, param.a * c_theta,
+             s_theta, c_theta * c_alpha, -c_theta * s_alpha, param.a * s_theta,
+             0,       s_alpha,            c_alpha,           param.d,
+             0,       0,                  0,                 1;
+
+        T *= A; // Chain transformations
+    }
+
+    return T;
+}
+
+// Inverse Kinematics (Iterative Pseudo-Inverse Jacobian Approach)
+VectorXd inverseKinematics(const vector<DHParameter>& dhParameters, const Matrix4d& target, int maxIterations = 1000, double tolerance = 1e-3) {
+    int dof = dhParameters.size();
+    VectorXd jointAngles(dof);
+
+    // Initialize joint angles
+    for (size_t i = 0; i < dof; ++i) {
+        jointAngles(i) = dhParameters[i].theta;
+    }
+
+    for (int iter = 0; iter < maxIterations; ++iter) {
+        // Compute forward kinematics
+        vector<DHParameter> currentDH = dhParameters;
+        for (size_t i = 0; i < dof; ++i) {
+            currentDH[i].theta = jointAngles(i);
+        }
+        Matrix4d currentPose = forwardKinematics(currentDH);
+
+        // Compute position and orientation errors
+        Vector3d currentPosition = currentPose.block<3, 1>(0, 3);
+        Vector3d targetPosition = target.block<3, 1>(0, 3);
+        Vector3d positionError = targetPosition - currentPosition;
+
+        Matrix3d currentRotation = currentPose.block<3, 3>(0, 0);
+        Matrix3d targetRotation = target.block<3, 3>(0, 0);
+        Vector3d orientationError = 0.5 * (currentRotation.col(0).cross(targetRotation.col(0)) +
+                                           currentRotation.col(1).cross(targetRotation.col(1)) +
+                                           currentRotation.col(2).cross(targetRotation.col(2)));
+
+        // Combine position and orientation errors
+        VectorXd error(6);
+        error.head<3>() = positionError;
+        error.tail<3>() = orientationError;
+
+        if (error.norm() < tolerance) {
+            break; // Converged
+        }
+
+        // Compute Jacobian (numerical approximation)
+        MatrixXd J(6, dof);
+        double delta = 1e-6;
+        for (size_t i = 0; i < dof; ++i) {
+            VectorXd tempAngles = jointAngles;
+            tempAngles(i) += delta;
+
+            currentDH = dhParameters;
+            for (size_t j = 0; j < dof; ++j) {
+                currentDH[j].theta = tempAngles(j);
+            }
+            Matrix4d tempPose = forwardKinematics(currentDH);
+
+            Vector3d tempPosition = tempPose.block<3, 1>(0, 3);
+            Vector3d tempOrientation = 0.5 * (tempPose.block<3, 3>(0, 0).col(0).cross(currentPose.block<3, 3>(0, 0).col(0)) +
+                                              tempPose.block<3, 3>(0, 0).col(1).cross(currentPose.block<3, 3>(0, 0).col(1)) +
+                                              tempPose.block<3, 3>(0, 0).col(2).cross(currentPose.block<3, 3>(0, 0).col(2)));
+
+            J.block<3, 1>(0, i) = (tempPosition - currentPosition) / delta;
+            J.block<3, 1>(3, i) = (tempOrientation - orientationError) / delta;
+        }
+
+        // Update joint angles using pseudo-inverse
+        jointAngles += J.completeOrthogonalDecomposition().pseudoInverse() * error;
+    }
+
+    return jointAngles;
+}
+
+// Example usage
+int main() {
+    //Define the DH table in form of array (vectors)
+    vector<DHParameter> dhParameters = {
+    // Planar Arm 
+    {0, PI / 2, 0, -PI / 2},  // Link 1
+    {0, 0, 750, 0},           // Link 2
+    {0, 0, 750, 0},           // Link 3
+    {0, 0, 750, 0},           // Link 4
+    {0, 0, 750, 0},           // Link 5
+
+    // Spatial Arm 
+    {0, 0, 0, 0,},             // Link 6
+    {600, 0, 0,0},           // Link 7
+    {0, -PI / 2, 0, 0},       // Link 8
+    {0, PI / 2, 0, 0},        // Link 9
+    {0, -PI / 2, 0, 0},      // Link 10
+    {0, PI / 2, 0, 0},       // Link 11
+    {526, 0, 0, 0}           // Link 12
+};
+    // Define target pose (position + orientation)
+    Matrix4d targetPose = Matrix4d::Identity();
+    targetPose.block<3, 3>(0, 0) = eulerToRotationMatrix(0.1, 0.2, 0.3); // Target orientation (roll, pitch, yaw)
+    targetPose(0, 3) = 0.5; // Target x position
+    targetPose(1, 3) = 0.2; // Target y position
+    targetPose(2, 3) = 0.5; // Target z position
+
+    // Compute Inverse Kinematics
+    VectorXd jointAngles = inverseKinematics(dhParameters, targetPose);
+    cout << "Inverse Kinematics Joint Angles:\n" << jointAngles.transpose() << endl;
+
+    return 0;
+}
+
