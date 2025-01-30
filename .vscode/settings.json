@@ -11,6 +11,7 @@
     "files.associations": {
         "*.conf": "bitbake",
         "*.inc": "bitbake",
-        "ik_jacobian": "cpp"
+        "ik_jacobian": "cpp",
+        "iostream": "cpp"
     }
 }
